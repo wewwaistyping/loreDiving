@@ -1033,6 +1033,7 @@
                     <span class="kms-mcrumb" data-kms-mcrumb hidden></span>
                     <button class="kms-icon-btn" data-kms-msearch title="Поиск">🔍</button>
                     <button class="kms-icon-btn" data-kms-mmore title="Меню">⋮</button>
+                    <button class="kms-icon-btn kms-mclose-btn" data-kms-mclose title="Закрыть библиотеку">✕</button>
                 </header>
 
                 <header class="kms-topbar">
@@ -1181,6 +1182,7 @@
         root.querySelector('[data-kms-mworld]').addEventListener('click', openWorldSwitcherSheet);
         root.querySelector('[data-kms-msearch]').addEventListener('click', openSearchOverlay);
         root.querySelector('[data-kms-mmore]').addEventListener('click', openMoreMenuSheet);
+        root.querySelector('[data-kms-mclose]').addEventListener('click', closeDrawer);
 
         // Re-apply mobile class on resize
         window.addEventListener('resize', applyMobileClass);
