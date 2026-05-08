@@ -1,0 +1,21 @@
+# Test/sanity scripts (private dev tooling, not part of extension)
+.parser-check.mjs
+.glossary-check.mjs
+.multisource-check.mjs
+
+# Personal lorebook test files — should NOT be in a public repo
+*SillyTavern*.json
+*EXILES*.json
+*TOSKA*.json
+*SACRAMENT*.json
+THE\ EXILES*.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
