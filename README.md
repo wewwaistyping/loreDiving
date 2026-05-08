@@ -1,4 +1,4 @@
-# 📖 Know My Setting (a.k.a. Lore Diving)
+# 📖 Know My Setting (a.k.a. Lore Diving) [unstable alpha test]
 
 Расширение для **SillyTavern** — превращает твои лорбуки в **визуальную интерактивную энциклопедию** мира.
 
