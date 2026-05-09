@@ -905,10 +905,11 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 /* ── Modal overlay (dialogs) ──────────────────────────────── */
 .kms-modal-overlay {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
     z-index: 10500;
     display: flex;
     align-items: center;
@@ -916,6 +917,7 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     padding: 20px;
     color: var(--kms-text);
     font-family: var(--kms-font-body);
+    overflow-y: auto;
 }
 .kms-dialog {
     background: var(--kms-bg);
@@ -1707,7 +1709,10 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 /* ── Lightbox ─────────────────────────────────────────────── */
 .kms-lightbox {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     background: rgba(0, 0, 0, 0.92);
     z-index: 11000;
     display: flex;
@@ -1874,20 +1879,23 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 /* ── Bottom sheet ─────────────────────────────────────────── */
 .kms-bsheet-backdrop {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
     z-index: 11200;
-    display: flex;
-    align-items: flex-end;
+    overflow: hidden;
     animation: kms-fade-in 200ms ease-out;
 }
 @keyframes kms-fade-in { from { opacity: 0; } to { opacity: 1; } }
 .kms-bsheet {
-    width: 100%;
-    max-height: 85vh;
+    position: absolute;
+    left: 0; right: 0;
+    bottom: 0;
+    max-height: 85%;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     background: var(--kms-bg);
     border-top: 1px solid var(--kms-border);
     border-top-left-radius: 16px;
@@ -1898,7 +1906,7 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     animation: kms-sheet-up 280ms cubic-bezier(0.22, 1, 0.36, 1);
     box-sizing: border-box;
 }
-@keyframes kms-sheet-up { from { transform: translateY(30%); } to { transform: translateY(0); } }
+@keyframes kms-sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
 .kms-bsheet-handle {
     width: 36px;
     height: 4px;
@@ -1969,7 +1977,10 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 /* ── Search overlay ───────────────────────────────────────── */
 .kms-search-overlay {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
     background: var(--kms-bg);
     z-index: 11400;
     display: flex;
