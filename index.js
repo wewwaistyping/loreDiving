@@ -1284,7 +1284,11 @@
         saveSettings();
         drawerEl.classList.toggle('kms-creator-on', s.creatorMode);
         status(s.creatorMode ? '✏️ Режим креатора включён.' : '👁 Режим читателя.');
-        if (currentArticleId) renderArticle(currentArticleId);
+        // Re-render only the view the user is currently looking at
+        if (!isMobile() || mobileTab === 'article') {
+            if (currentArticleId) renderArticle(currentArticleId);
+        }
+        // On catalog/map tab — don't jump elsewhere
     }
 
     function toggleSpoilersGlobal() {
@@ -1294,7 +1298,10 @@
         drawerEl.classList.toggle('kms-spoilers-on', s.showSpoilersGlobal);
         status(s.showSpoilersGlobal ? '🔓 Спойлеры показываются.' : '🔒 Спойлеры скрыты.');
         renderCatalog();
-        if (currentArticleId) renderArticle(currentArticleId);
+        // Re-render article only if it's the active view (don't yank user out of catalog)
+        if (!isMobile() || mobileTab === 'article') {
+            if (currentArticleId) renderArticle(currentArticleId);
+        }
     }
 
     // ── Resize ─────────────────────────────────────────────────

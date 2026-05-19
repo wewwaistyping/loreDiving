@@ -1190,11 +1190,13 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     border-radius: var(--kms-radius);
 }
 
-/* category manager — extra column for fields button */
-.kms-cats-item { grid-template-columns: 50px 1fr 50px 70px 50px 36px; }
-.kms-cats-item .kms-cat-fields {
+/* category manager — desktop layout: icon | label | count | fields | cmds | spoiler | delete (7 cols) */
+.kms-cats-item { grid-template-columns: 48px 1fr 44px 60px 60px 44px 36px; }
+.kms-cats-item .kms-cat-fields,
+.kms-cats-item .kms-cat-cmds {
     font-size: 11px !important;
-    padding: 4px 8px !important;
+    padding: 4px 6px !important;
+    white-space: nowrap;
 }
 
 /* ── Sources manager ─────────────────────────────────────── */
@@ -2063,8 +2065,8 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 
 /* ── Responsive: SOFT (821px+ stays desktop, but small adjustments) ─ */
 @media (max-width: 1024px) {
-    .kms-cats-item, .kms-cats-add { grid-template-columns: 40px 1fr 30px 30px 30px; gap: 4px; }
-    .kms-cats-item { grid-template-columns: 40px 1fr 40px 50px 50px 32px 30px; }
+    .kms-cats-item { grid-template-columns: 40px 1fr 36px 52px 52px 36px 30px; gap: 5px; }
+    .kms-cats-add  { grid-template-columns: 40px 1fr 36px 100px; gap: 5px; }
 }
 
 /* ── Responsive: MOBILE (≤820px) ─────────────────────────── */
@@ -2188,10 +2190,30 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 
     /* Form controls stack */
     .kms-drawer.kms-mobile .kms-field-row { grid-template-columns: 1fr; }
-    .kms-drawer.kms-mobile .kms-cats-item,
-    .kms-drawer.kms-mobile .kms-cats-add { grid-template-columns: 36px 1fr 30px 30px 30px 30px 30px; gap: 3px; }
+
+    /* Categories manager — mobile: 4 columns (icon | label | spoiler | delete).
+       Hide count + fields + cmds buttons — access them on desktop. */
+    .kms-drawer.kms-mobile .kms-cats-item { grid-template-columns: 38px 1fr 36px 32px; gap: 6px; }
+    .kms-drawer.kms-mobile .kms-cats-item .kms-cat-count,
+    .kms-drawer.kms-mobile .kms-cats-item .kms-cat-fields,
+    .kms-drawer.kms-mobile .kms-cats-item .kms-cat-cmds { display: none; }
+    .kms-drawer.kms-mobile .kms-cats-add { grid-template-columns: 38px 1fr 36px 110px; gap: 6px; }
+    .kms-drawer.kms-mobile .kms-cats-list h3,
+    .kms-drawer.kms-mobile .kms-dialog h3 { font-size: 18px; }
+
     .kms-drawer.kms-mobile .kms-fields-item { grid-template-columns: 80px 1fr 24px 24px 24px; }
     .kms-drawer.kms-mobile .kms-fields-add  { grid-template-columns: 80px 1fr 90px; }
+
+    /* Hint that advanced category editing is desktop-only */
+    .kms-drawer.kms-mobile .kms-cats-list + .kms-cats-add::before {
+        content: '⚙ Поля карточки и кнопки в чат — только на десктопе';
+        display: block;
+        grid-column: 1 / -1;
+        font-size: 11px;
+        font-style: italic;
+        color: var(--kms-text-faint);
+        margin-bottom: 8px;
+    }
 
     /* FAB hidden on mobile (drawer covers everything) */
     .kms-fab { display: none !important; }
