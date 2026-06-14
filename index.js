@@ -43,6 +43,7 @@
         catalogCollapsed: false,
         // v0.6.0
         showFab: true,                 // floating button visible
+        fabPos: null,                  // {x, y} if user dragged it; null = default bottom-right
         hotkey: 'Alt+K',               // open/close drawer hotkey
         preferredLanguage: 'ru',
         liveTracking: true,            // observe chat & highlight mentioned articles in catalog
@@ -262,20 +263,75 @@
 
     // ── Player overlay (notes/favorite/read) ──────────────────
     // Stored in settings (kept separate from articles so re-import never wipes them).
+    // v0.7.5: notes are now an array of {id, text, createdAt, updatedAt} entries.
+    // Legacy string notes are auto-migrated on first read.
     function getPlayerData(articleId) {
         const s = getSettings();
-        return s.playerData[articleId] || { notes: '', favorite: false, read: false };
+        const raw = s.playerData[articleId];
+        if (!raw) return { notes: [], favorite: false, read: false };
+        // Migrate legacy: notes was a single string
+        if (typeof raw.notes === 'string') {
+            const migrated = {
+                ...raw,
+                notes: raw.notes.trim()
+                    ? [{ id: 'n-' + uid(), text: raw.notes, createdAt: Date.now(), updatedAt: Date.now() }]
+                    : [],
+            };
+            s.playerData[articleId] = migrated;
+            saveSettings();
+            return migrated;
+        }
+        if (!Array.isArray(raw.notes)) raw.notes = [];
+        return raw;
     }
     function setPlayerData(articleId, patch) {
         const s = getSettings();
-        const cur = s.playerData[articleId] || { notes: '', favorite: false, read: false };
+        const cur = getPlayerData(articleId);
         s.playerData[articleId] = { ...cur, ...patch };
+        saveSettings();
+    }
+    function addPlayerNote(articleId, text = '') {
+        const s = getSettings();
+        const cur = getPlayerData(articleId);
+        const note = { id: 'n-' + uid(), text, createdAt: Date.now(), updatedAt: Date.now() };
+        const notes = [note, ...(cur.notes || [])]; // newest first
+        s.playerData[articleId] = { ...cur, notes };
+        saveSettings();
+        return note;
+    }
+    function updatePlayerNote(articleId, noteId, text) {
+        const s = getSettings();
+        const cur = getPlayerData(articleId);
+        const notes = (cur.notes || []).map(n =>
+            n.id === noteId ? { ...n, text, updatedAt: Date.now() } : n);
+        s.playerData[articleId] = { ...cur, notes };
+        saveSettings();
+    }
+    function deletePlayerNote(articleId, noteId) {
+        const s = getSettings();
+        const cur = getPlayerData(articleId);
+        const notes = (cur.notes || []).filter(n => n.id !== noteId);
+        s.playerData[articleId] = { ...cur, notes };
         saveSettings();
     }
     function clearPlayerData(articleId) {
         const s = getSettings();
         delete s.playerData[articleId];
         saveSettings();
+    }
+
+    // Batch: mark all articles in current world as read
+    async function markAllArticlesRead() {
+        const w = await getCurrentWorld();
+        if (!w) { status('Нет активного мира.', 'warn'); return; }
+        const articles = (await dbGetAll('articles')).filter(a => a.worldId === w.id);
+        let changed = 0;
+        for (const a of articles) {
+            const p = getPlayerData(a.id);
+            if (!p.read) { setPlayerData(a.id, { read: true }); changed++; }
+        }
+        status(`✓ Помечено прочитанным: ${changed} статей.`);
+        renderCatalog();
     }
 
     // ── Player journal articles ───────────────────────────────
@@ -934,6 +990,18 @@
         const d = new Date(ts);
         const pad = n => String(n).padStart(2, '0');
         return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    function fmtNoteDate(ts) {
+        const now = Date.now();
+        const diff = Math.max(0, now - ts);
+        const min = 60 * 1000, hour = 60 * min, day = 24 * hour;
+        if (diff < min)      return 'только что';
+        if (diff < hour)     return `${Math.floor(diff / min)} мин назад`;
+        if (diff < day)      return `${Math.floor(diff / hour)} ч назад`;
+        if (diff < 7 * day)  return `${Math.floor(diff / day)} дн назад`;
+        const d = new Date(ts);
+        const pad = n => String(n).padStart(2, '0');
+        return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()}`;
     }
 
     // ── Drawer ─────────────────────────────────────────────────
@@ -1657,8 +1725,10 @@
     function renderArticleTags(tags) {
         if (!tags?.length) return '';
         const first = escHtml(tags[0]);
-        if (tags.length === 1) return `<span class="kms-arc-tag">${first}</span>`;
-        return `<span class="kms-arc-tag">${first}</span><span class="kms-arc-more" title="${escHtml(tags.slice(1).join(', '))}">+${tags.length - 1}</span>`;
+        const firstAttr = escAttr(tags[0]);
+        if (tags.length === 1) return `<span class="kms-arc-tag" title="${firstAttr}">${first}</span>`;
+        const restAttr = escAttr(tags.join(', '));
+        return `<span class="kms-arc-tag" title="${firstAttr}">${first}</span><span class="kms-arc-more" title="${restAttr}">+${tags.length - 1}</span>`;
     }
 
     function renderTagCloud(articles) {
@@ -1798,11 +1868,24 @@
                 <button class="kms-btn kms-btn-ghost" data-kms-toggle-notes title="Заметки игрока">📓</button>
             </div>`;
 
-        // Player notes section (collapsible)
+        // Player notes — list of small entries with timestamps (newest first)
+        const notesArr = player.notes || [];
+        const notesCount = notesArr.length;
         const notesBlock = `
-            <details class="kms-player-notes" ${player.notes ? 'open' : ''}>
-                <summary>📓 Мои заметки${player.notes ? ' · есть' : ''}</summary>
-                <textarea class="kms-player-notes-text" placeholder="Записывай свои наблюдения, теории, напоминалки…" data-kms-notes>${escHtml(player.notes || '')}</textarea>
+            <details class="kms-player-notes" ${notesCount > 0 ? 'open' : ''}>
+                <summary>📓 Мои заметки${notesCount ? ` · ${notesCount}` : ''}</summary>
+                <div class="kms-notes-list" data-kms-notes-list>
+                    ${notesArr.map(n => `
+                        <div class="kms-note-item" data-note-id="${escAttr(n.id)}">
+                            <div class="kms-note-head">
+                                <span class="kms-note-time">${fmtNoteDate(n.createdAt)}</span>
+                                <button class="kms-note-del" data-kms-note-del="${escAttr(n.id)}" title="Удалить заметку">🗑</button>
+                            </div>
+                            <textarea class="kms-note-text" data-kms-note-edit="${escAttr(n.id)}" placeholder="…">${escHtml(n.text || '')}</textarea>
+                        </div>
+                    `).join('')}
+                </div>
+                <button class="kms-btn kms-note-add" data-kms-note-add>+ Новая заметка</button>
             </details>`;
 
         const editBtn = allowEdit
@@ -1892,16 +1975,42 @@
             const det = main.querySelector('.kms-player-notes');
             if (det) { det.open = !det.open; if (det.open) det.querySelector('textarea')?.focus(); }
         });
-        // Notes auto-save (debounced)
-        const notesEl = main.querySelector('[data-kms-notes]');
-        if (notesEl) {
-            let t = null;
-            notesEl.addEventListener('input', () => {
-                clearTimeout(t);
-                t = setTimeout(() => {
-                    setPlayerData(a.id, { notes: notesEl.value });
+        // Notes — per-item edit, delete, and add new (debounced autosave)
+        const notesTimers = new Map(); // noteId → setTimeout handle
+        main.querySelectorAll('[data-kms-note-edit]').forEach(ta => {
+            ta.addEventListener('input', () => {
+                const id = ta.dataset.kmsNoteEdit;
+                clearTimeout(notesTimers.get(id));
+                notesTimers.set(id, setTimeout(() => {
+                    updatePlayerNote(a.id, id, ta.value);
                     status(`📓 Заметка сохранена.`);
-                }, 600);
+                    // Update count badge in catalog
+                    renderCatalog();
+                }, 600));
+            });
+        });
+        main.querySelectorAll('[data-kms-note-del]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.kmsNoteDel;
+                if (!confirm('Удалить заметку?')) return;
+                deletePlayerNote(a.id, id);
+                status('🗑 Заметка удалена.');
+                renderReader(a, allowEdit);
+                renderCatalog();
+            });
+        });
+        const addBtn = main.querySelector('[data-kms-note-add]');
+        if (addBtn) {
+            addBtn.addEventListener('click', () => {
+                const note = addPlayerNote(a.id);
+                status('📓 Создана новая заметка.');
+                renderReader(a, allowEdit);
+                renderCatalog();
+                // Focus the newly created textarea after re-render
+                setTimeout(() => {
+                    const newTa = main.querySelector(`[data-kms-note-edit="${note.id}"]`);
+                    if (newTa) newTa.focus();
+                }, 50);
             });
         }
         // Language switcher
@@ -3150,6 +3259,7 @@
             <div class="kms-bsheet-row" data-act="map-from-more"><span class="kms-bsheet-icon">🗺</span><span>Открыть карту</span></div>
             <div class="kms-bsheet-row" data-act="journal"><span class="kms-bsheet-icon">+📓</span><span>Новая запись в дневник</span></div>
             <div class="kms-bsheet-row" data-act="random"><span class="kms-bsheet-icon">🎲</span><span>Случайная статья</span></div>
+            <div class="kms-bsheet-row" data-act="mark-all-read"><span class="kms-bsheet-icon">✓✓</span><span>Пометить всё прочитанным</span></div>
             <div class="kms-bsheet-row" data-act="status-log"><span class="kms-bsheet-icon">📋</span><span>Журнал событий</span></div>
         `;
         openBottomSheet({ title: 'Меню', html, onMount: (sheet, close) => {
@@ -3179,6 +3289,7 @@
                 else if (a === 'map-from-more') switchMobileTab('map');
                 else if (a === 'journal') createJournalFromPrompt();
                 else if (a === 'random') openRandomArticle();
+                else if (a === 'mark-all-read') markAllArticlesRead();
                 else if (a === 'status-log') openStatusLogSheet();
             }));
         }});
@@ -3608,10 +3719,122 @@
         if (!getSettings().showFab) return;
         const fab = document.createElement('button');
         fab.className = 'kms-fab';
-        fab.title = 'Know My Setting (хоткей: ' + (getSettings().hotkey || 'Alt+K') + ')';
+        fab.title = 'Know My Setting (хоткей: ' + (getSettings().hotkey || 'Alt+K') + ') · перетащи чтобы переместить';
         fab.textContent = '📖';
-        fab.addEventListener('click', toggleDrawerOpen);
         document.body.appendChild(fab);
+        applyFabPosition();
+        bindFabDrag(fab);
+        fab.addEventListener('click', () => {
+            if (fab._suppressClick) return;
+            toggleDrawerOpen();
+        });
+        // Keep FAB on screen if viewport changes
+        window.addEventListener('resize', applyFabPosition);
+    }
+
+    function applyFabPosition() {
+        const fab = document.querySelector('.kms-fab');
+        if (!fab) return;
+        const s = getSettings();
+        if (!s.fabPos) {
+            // default: bottom-right via CSS (clear inline overrides)
+            fab.style.left = '';
+            fab.style.top = '';
+            fab.style.right = '';
+            fab.style.bottom = '';
+            return;
+        }
+        const w = fab.offsetWidth || 50;
+        const h = fab.offsetHeight || 50;
+        const maxX = Math.max(0, window.innerWidth - w - 4);
+        const maxY = Math.max(0, window.innerHeight - h - 4);
+        const x = Math.max(4, Math.min(maxX, s.fabPos.x));
+        const y = Math.max(4, Math.min(maxY, s.fabPos.y));
+        fab.style.left = x + 'px';
+        fab.style.top = y + 'px';
+        fab.style.right = 'auto';
+        fab.style.bottom = 'auto';
+    }
+
+    function bindFabDrag(fab) {
+        const DRAG_THRESHOLD = 5; // px before we treat it as drag, not click
+        let drag = null;
+
+        const getPoint = (e) => {
+            const t = e.touches?.[0] || e.changedTouches?.[0];
+            return t ? { x: t.clientX, y: t.clientY } : { x: e.clientX, y: e.clientY };
+        };
+
+        const onStart = (e) => {
+            if (e.button !== undefined && e.button !== 0) return; // left button only
+            const p = getPoint(e);
+            const rect = fab.getBoundingClientRect();
+            drag = {
+                offsetX: p.x - rect.left,
+                offsetY: p.y - rect.top,
+                startX:  p.x,
+                startY:  p.y,
+                moved:   false,
+            };
+        };
+
+        const onMove = (e) => {
+            if (!drag) return;
+            const p = getPoint(e);
+            const dx = p.x - drag.startX;
+            const dy = p.y - drag.startY;
+            if (!drag.moved && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+                drag.moved = true;
+                fab.classList.add('kms-fab-dragging');
+            }
+            if (drag.moved) {
+                e.preventDefault();
+                const x = p.x - drag.offsetX;
+                const y = p.y - drag.offsetY;
+                fab.style.left = x + 'px';
+                fab.style.top = y + 'px';
+                fab.style.right = 'auto';
+                fab.style.bottom = 'auto';
+            }
+        };
+
+        const onEnd = () => {
+            if (!drag) return;
+            if (drag.moved) {
+                fab.classList.remove('kms-fab-dragging');
+                const rect = fab.getBoundingClientRect();
+                const s = getSettings();
+                s.fabPos = { x: Math.round(rect.left), y: Math.round(rect.top) };
+                saveSettings();
+                // Clamp into viewport
+                applyFabPosition();
+                // Suppress the click that follows mouseup
+                fab._suppressClick = true;
+                setTimeout(() => { fab._suppressClick = false; }, 250);
+                status('📍 Иконка перемещена.');
+            }
+            drag = null;
+        };
+
+        fab.addEventListener('mousedown', onStart);
+        fab.addEventListener('touchstart', onStart, { passive: true });
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onEnd);
+        document.addEventListener('touchmove', onMove, { passive: false });
+        document.addEventListener('touchend', onEnd);
+
+        // Double-click resets to default position
+        fab.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const s = getSettings();
+            s.fabPos = null;
+            saveSettings();
+            applyFabPosition();
+            status('📍 Иконка возвращена в исходную позицию.');
+            fab._suppressClick = true;
+            setTimeout(() => { fab._suppressClick = false; }, 250);
+        });
     }
     function unmountFab() {
         const fab = document.querySelector('.kms-fab');

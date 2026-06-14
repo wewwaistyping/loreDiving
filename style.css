@@ -419,6 +419,34 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     border: 1px solid var(--kms-border-soft);
     flex-shrink: 0;
 }
+/* In the catalog: long tags must not push the name out of view.
+   1. Hard overflow-x on the catalog so nothing can spill horizontally.
+   2. Tag truncates to a small max-width with ellipsis.
+   3. Title gets priority and shrinks last. */
+.kms-catalog { overflow-x: hidden; }
+.kms-nav-link {
+    min-width: 0;             /* allow children to shrink */
+    flex-wrap: nowrap;
+}
+.kms-nav-link .kms-arc-tag {
+    max-width: 60px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
+    min-width: 0;
+}
+.kms-nav-link .kms-arc-more {
+    flex-shrink: 0;
+    margin-left: 2px;
+}
+.kms-nav-link .kms-nav-title {
+    flex: 1 1 0;              /* take all available, shrink to 0 if needed */
+    min-width: 50px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 .kms-arc-more {
     font-family: var(--kms-font-mono);
     font-size: 8px;
@@ -1073,6 +1101,14 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     border-top: 2px solid var(--kms-accent);
     font-size: 12px;
 }
+/* Sections below body must not slide under the floated infobox.
+   clear:both pushes them down past the infobox. */
+.kms-player-notes,
+.kms-snippet,
+.kms-source-keys,
+.kms-body-placeholder { clear: both; }
+/* And clear after the article content as well, to bound the floated infobox cleanly */
+.kms-article-content::after { content: ''; display: block; clear: both; }
 .kms-infobox-title {
     font-family: var(--kms-font-display);
     font-size: 14px;
@@ -1587,6 +1623,74 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 }
 .kms-player-notes-text:focus { outline: none; border-color: var(--kms-info); }
 
+/* v0.7.5: notes list — each note is its own card with timestamp + delete */
+.kms-notes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 12px;
+}
+.kms-note-item {
+    background: var(--kms-bg);
+    border: 1px solid var(--kms-border);
+    border-left: 2px solid var(--kms-info);
+    border-radius: var(--kms-radius);
+    padding: 8px 10px 10px;
+}
+.kms-note-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+.kms-note-time {
+    font-family: var(--kms-font-mono);
+    font-size: 10px;
+    color: var(--kms-text-faint);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.kms-note-del {
+    background: transparent;
+    border: none;
+    color: var(--kms-text-faint);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    transition: color 120ms ease, background 120ms ease;
+}
+.kms-note-del:hover { color: var(--kms-danger); background: rgba(201, 122, 106, 0.1); }
+.kms-note-text {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--kms-text);
+    padding: 0;
+    font-family: var(--kms-font-display);
+    font-size: 14px;
+    line-height: 1.55;
+    resize: vertical;
+    min-height: 40px;
+    box-sizing: border-box;
+    display: block;
+}
+.kms-note-text:focus { outline: none; }
+
+.kms-note-add {
+    margin-top: 10px;
+    width: 100%;
+    background: transparent !important;
+    border: 1px dashed var(--kms-info) !important;
+    color: var(--kms-info) !important;
+    padding: 7px !important;
+    font-size: 12px !important;
+}
+.kms-note-add:hover {
+    background: rgba(109, 163, 196, 0.08) !important;
+    border-style: solid !important;
+}
+
 /* Language switcher (reader) */
 .kms-lang-switch {
     display: flex;
@@ -1755,15 +1859,26 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     border: 1px solid #d4a574;
     color: #d4a574;
     font-size: 22px;
-    cursor: pointer;
+    cursor: grab;
     z-index: 9000;
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 150ms ease, background 150ms ease;
+    transition: transform 150ms ease, background 150ms ease, box-shadow 150ms ease;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
 }
 .kms-fab:hover { background: #322318; transform: scale(1.06); }
+.kms-fab:active { cursor: grabbing; }
+.kms-fab.kms-fab-dragging {
+    cursor: grabbing;
+    transform: scale(1.12);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.7), 0 0 0 4px rgba(212, 165, 116, 0.2);
+    transition: none;
+    opacity: 0.95;
+}
 
 /* ── Mobile (top bar / bottom tabs / sheets / overlays) ─── */
 /* These elements exist in DOM at all sizes, but hidden on desktop. */
