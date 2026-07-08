@@ -26,7 +26,7 @@
     'use strict';
 
     const KMS = 'know_my_setting';
-    const VERSION = '0.7.0';
+    const VERSION = '0.7.6';
     const DB_NAME = 'kms-wiki';
     const DB_VERSION = 4;
 
@@ -722,6 +722,8 @@
                 categoryKey: me.includes('categoryKey') ? old.categoryKey : f.categoryKey,
                 tags:        me.includes('tags')        ? old.tags        : (old.tags?.length ? old.tags : f.tags),
                 body:        old.body || '',
+                // Creator-authored content that lives ONLY in our wiki layer must survive re-import.
+                bodyVariants: old.bodyVariants || {},
                 media:       old.media || [],
                 infobox:     old.infobox || {},
                 related:     old.related || [],
@@ -1688,7 +1690,7 @@
             const isSpoilerCat = cat.isSpoiler && !showSpoilers;
             html += `<details class="kms-cat ${cat.isSpoiler ? 'kms-cat-spoiler' : ''}" ${isSpoilerCat ? '' : 'open'}>
                 <summary>
-                    <span class="kms-cat-name">${cat.icon || ''} ${escHtml(cat.label)}</span>
+                    <span class="kms-cat-name">${escHtml(cat.icon || '')} ${escHtml(cat.label)}</span>
                     <span class="kms-count">${items.length}</span>
                 </summary>
                 <ul>`;
@@ -1830,7 +1832,7 @@
             .filter(f => infoboxData[f.key] && String(infoboxData[f.key]).trim());
         const infoboxBlock = visibleInfoFields.length
             ? `<aside class="kms-infobox">
-                 <div class="kms-infobox-title">${cat.icon || ''} ${escHtml(cat.label)}</div>
+                 <div class="kms-infobox-title">${escHtml(cat.icon || '')} ${escHtml(cat.label)}</div>
                  <dl class="kms-infobox-list">
                      ${visibleInfoFields.map(f => `
                          <dt>${escHtml(f.label)}</dt>
@@ -2059,8 +2061,20 @@
         const mediaURLs = await Promise.all(mediaIds.map(async (id) => ({ id, url: await getImageURL(id) })));
         const validMedia = mediaURLs.filter(m => m.url);
 
+        // ── Language buffer is the single source of truth for body text while editing.
+        // Initialise it BEFORE building the HTML so tabs + textarea seed from it (fixes:
+        // "+" tab not appearing, typed text lost on category change / image add).
+        if (!a._editorLangBuffer) {
+            a._editorLangBuffer = { ...(a.bodyVariants || {}) };
+            if (Object.keys(a._editorLangBuffer).length === 0 && a.body) {
+                a._editorLangBuffer[getSettings().preferredLanguage || 'ru'] = a.body;
+            }
+        }
+        const editLang = getSettings().preferredLanguage || 'ru';
+        const bufLangs = Object.keys(a._editorLangBuffer);
+
         const catOptions = cats.map(c =>
-            `<option value="${escHtml(c.key)}" ${c.key === a.categoryKey ? 'selected' : ''}>${c.icon} ${escHtml(c.label)}</option>`
+            `<option value="${escHtml(c.key)}" ${c.key === a.categoryKey ? 'selected' : ''}>${escHtml(c.icon || '')} ${escHtml(c.label)}</option>`
         ).join('');
 
         const tagsValue = (a.tags || []).join(', ');
@@ -2143,20 +2157,16 @@
                     </span>
                     <div class="kms-lang-tabs" data-kms-lang-tabs>
                         ${(() => {
-                            const variants = a.bodyVariants || {};
-                            const langs = ['ru', 'en', ...Object.keys(variants).filter(k => k !== 'ru' && k !== 'en')];
+                            // Tabs = ru, en, plus any language present in the edit buffer.
+                            const langs = ['ru', 'en', ...bufLangs.filter(k => k !== 'ru' && k !== 'en')];
                             const seen = new Set();
                             return langs.filter(l => !seen.has(l) && (seen.add(l), true)).map(l => `
-                                <button class="kms-lang-tab ${l === (getSettings().preferredLanguage || 'ru') ? 'kms-lang-tab-active' : ''}" data-tab-lang="${escHtml(l)}">${escHtml(l).toUpperCase()}</button>
+                                <button class="kms-lang-tab ${l === editLang ? 'kms-lang-tab-active' : ''}" data-tab-lang="${escHtml(l)}">${escHtml(l).toUpperCase()}</button>
                             `).join('');
                         })()}
                         <button class="kms-lang-tab kms-lang-tab-add" data-tab-add title="Добавить язык">+</button>
                     </div>
-                    <textarea data-f="body" rows="14" placeholder="Длинное описание для энциклопедии…">${escHtml((() => {
-                        const lang = getSettings().preferredLanguage || 'ru';
-                        const v = a.bodyVariants || {};
-                        return v[lang] !== undefined ? v[lang] : (a.body || '');
-                    })())}</textarea>
+                    <textarea data-f="body" rows="14" placeholder="Длинное описание для энциклопедии…">${escHtml(a._editorLangBuffer[editLang] !== undefined ? a._editorLangBuffer[editLang] : (a.body || ''))}</textarea>
                 </label>
 
                 <details class="kms-snippet" open>
@@ -2176,6 +2186,8 @@
         });
         // Re-render editor when category changes (infobox fields differ per category)
         main.querySelector('[data-f="categoryKey"]').addEventListener('change', async (e) => {
+            // Flush the currently-typed body into the buffer so the re-render keeps it
+            a._editorLangBuffer[activeLang] = bodyTa.value;
             const tempPatch = { ...a, categoryKey: e.target.value };
             // grab current user input so we don't lose it on re-render
             const get = sel => main.querySelector(`[data-f="${sel}"]`);
@@ -2183,7 +2195,6 @@
             tempPatch.subtitle = get('subtitle').value;
             tempPatch.tags     = parseTags(get('tags').value);
             tempPatch.spoiler  = get('spoiler').checked;
-            tempPatch.body     = get('body').value;
             tempPatch.infobox = { ...(a.infobox || {}) };
             main.querySelectorAll('[data-info-key]').forEach(el => {
                 const v = el.value.trim();
@@ -2202,16 +2213,8 @@
         });
         bindDropZone(main.querySelector('[data-kms-dropzone]'), a);
 
-        // Language tabs in editor
-        // We keep an in-flight `editorLangBuffer` map per language so switching tabs preserves unsaved typing
-        if (!a._editorLangBuffer) {
-            a._editorLangBuffer = { ...(a.bodyVariants || {}) };
-            // seed default body into preferred language slot if no variants exist yet
-            if (Object.keys(a._editorLangBuffer).length === 0 && a.body) {
-                a._editorLangBuffer[getSettings().preferredLanguage || 'ru'] = a.body;
-            }
-        }
-        let activeLang = getSettings().preferredLanguage || 'ru';
+        // Language tabs in editor. Buffer already initialised at the top of renderEditor.
+        let activeLang = editLang;
 
         const bodyTa = main.querySelector('[data-f="body"]');
         const langTabs = main.querySelectorAll('[data-tab-lang]');
@@ -2229,12 +2232,14 @@
         const addBtn = main.querySelector('[data-tab-add]');
         if (addBtn) addBtn.addEventListener('click', (e) => {
             e.preventDefault();
+            // Flush current text first so it isn't lost on re-render
+            a._editorLangBuffer[activeLang] = bodyTa.value;
             const code = prompt('Код языка (2 буквы, например: de, fr, es):');
             if (!code) return;
             const norm = code.trim().toLowerCase().slice(0, 5);
             if (!norm) return;
             a._editorLangBuffer[norm] = a._editorLangBuffer[norm] || '';
-            renderEditor(a); // re-render to show new tab
+            renderEditor(a); // re-render to show new tab (buffer persists on `a`); click it to edit
         });
     }
 
@@ -2310,30 +2315,72 @@
         });
     }
 
+    // Read the live editor form into the working article object so unsaved edits
+    // survive a re-render (used when adding/removing images mid-edit).
+    function captureEditorInto(article) {
+        const main = drawerEl.querySelector('.kms-article');
+        if (!main) return;
+        const get = sel => main.querySelector(`[data-f="${sel}"]`);
+        if (get('title'))      article.title      = get('title').value.trim() || article.title;
+        if (get('subtitle'))   article.subtitle   = get('subtitle').value.trim();
+        if (get('categoryKey'))article.categoryKey= get('categoryKey').value;
+        if (get('tags'))       article.tags       = parseTags(get('tags').value);
+        if (get('spoiler'))    article.spoiler    = get('spoiler').checked;
+        const bodyTa = get('body');
+        if (bodyTa) {
+            const activeTab = main.querySelector('.kms-lang-tab-active');
+            const activeLang = activeTab?.dataset.tabLang || (getSettings().preferredLanguage || 'ru');
+            article._editorLangBuffer = article._editorLangBuffer || {};
+            article._editorLangBuffer[activeLang] = bodyTa.value;
+            article.body = bodyTa.value; // legacy mirror
+        }
+        const ibox = { ...(article.infobox || {}) };
+        main.querySelectorAll('[data-info-key]').forEach(el => {
+            const v = el.value.trim();
+            if (v) ibox[el.dataset.infoKey] = v; else delete ibox[el.dataset.infoKey];
+        });
+        article.infobox = ibox;
+    }
+
+    // Persist ONLY the media array to the DB record, leaving saved scalar fields intact.
+    // (Blobs are already committed; we don't want to auto-save unsaved title/body here.)
+    async function persistMediaOnly(article) {
+        const dbRec = await dbGet('articles', article.id);
+        if (dbRec) {
+            dbRec.media = article.media;
+            dbRec.updatedAt = Date.now();
+            await dbPut('articles', dbRec);
+        } else {
+            // Article not in DB yet (fresh journal/new) — safe to persist working copy
+            const clean = { ...article };
+            delete clean._editorLangBuffer;
+            await dbPut('articles', clean);
+        }
+    }
+
     async function handleImageFiles(files, article) {
-        const fresh = await dbGet('articles', article.id) || article;
         const newIds = [];
         for (const f of files) {
             try { newIds.push(await saveImageBlob(f)); }
             catch (err) { status(`❌ ${f.name}: ${err.message}`, 'error'); }
         }
-        if (newIds.length) {
-            fresh.media = [...(fresh.media || []), ...newIds];
-            fresh.updatedAt = Date.now();
-            await dbPut('articles', fresh);
-            renderEditor(fresh);
-            renderCatalog();
-        }
+        if (!newIds.length) return;
+        captureEditorInto(article); // keep unsaved title/body/tags/infobox + lang buffer
+        article.media = [...(article.media || []), ...newIds];
+        article.updatedAt = Date.now();
+        await persistMediaOnly(article);
+        renderEditor(article);
+        renderCatalog();
     }
 
     async function removeImage(mediaId, article) {
-        const fresh = await dbGet('articles', article.id) || article;
-        fresh.media = (fresh.media || []).filter(id => id !== mediaId);
-        fresh.updatedAt = Date.now();
-        await dbPut('articles', fresh);
+        captureEditorInto(article); // keep unsaved edits
+        article.media = (article.media || []).filter(id => id !== mediaId);
+        article.updatedAt = Date.now();
+        await persistMediaOnly(article);
         await dbDelete('media', mediaId);
         status(`🗑 Удалена картинка.`);
-        renderEditor(fresh);
+        renderEditor(article);
         renderCatalog();
     }
 
@@ -2888,10 +2935,15 @@
             main.querySelector('[data-kms-map-replace]').addEventListener('click', () => replaceFile.click());
             replaceFile.addEventListener('change', async (e) => {
                 const f = e.target.files[0]; if (!f) return;
+                const oldMediaId = map.mediaId;
                 try {
-                    if (map.mediaId) await dbDelete('media', map.mediaId);
+                    // Save the NEW image first — only delete the old one after success,
+                    // so a failed/invalid upload never destroys the existing map.
                     const mediaId = await saveImageBlob(f);
                     await setMapForWorld(w.id, mediaId);
+                    if (oldMediaId && oldMediaId !== mediaId) {
+                        try { await dbDelete('media', oldMediaId); } catch (_) {}
+                    }
                     renderMapView();
                 } catch (err) { status(`❌ ${err.message}`, 'error'); }
             });
@@ -3538,9 +3590,26 @@
             const idMap = new Map();
             idMap.set(bundle.world.id, world.id);
 
-            // Sources: rebuild ids under the new world
+            // When merging into an existing world, reuse existing source ids so a repeated
+            // import UPDATES instead of duplicating. Match by fileName+role; journal by role.
+            const mergingExisting = choice.action !== 'newWorld';
+            const existingSources = mergingExisting ? await getSourcesForWorld(world.id) : [];
+            const resolveSourceId = (src) => {
+                if (mergingExisting) {
+                    if (src.role === 'journal') {
+                        const j = existingSources.find(s => s.role === 'journal');
+                        return j ? j.id : `${world.id}::src-journal`;
+                    }
+                    const m = existingSources.find(s =>
+                        s.fileName === src.fileName && (s.role || '') === (src.role || ''));
+                    if (m) return m.id;
+                }
+                return src.role === 'journal' ? `${world.id}::src-journal` : `${world.id}::src-${uid()}`;
+            };
+
+            // Sources: map ids (stable on merge, fresh on new world)
             for (const src of (bundle.sources || [])) {
-                const newId = `${world.id}::src-${uid()}`;
+                const newId = resolveSourceId(src);
                 idMap.set(src.id, newId);
                 await dbPut('sources', { ...src, id: newId, worldId: world.id });
             }
@@ -3548,9 +3617,12 @@
             for (const cat of (bundle.categories || [])) {
                 const newId = `${world.id}::cat-${cat.key}`;
                 idMap.set(cat.id, newId);
+                // Sanitize: an icon is at most a couple of chars — never HTML. Guards against
+                // a malicious bundle smuggling markup into a field rendered by the reader.
+                const safeIcon = typeof cat.icon === 'string' ? cat.icon.slice(0, 8) : '';
                 // If a category with same key already exists in target world (merge), keep existing
                 const existing = await dbGet('categories', newId);
-                if (!existing) await dbPut('categories', { ...cat, id: newId, worldId: world.id });
+                if (!existing) await dbPut('categories', { ...cat, icon: safeIcon, id: newId, worldId: world.id });
             }
             // Media: rebuild ids
             for (const m of (bundle.media || [])) {
