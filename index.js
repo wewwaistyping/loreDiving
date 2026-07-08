@@ -26,7 +26,7 @@
     'use strict';
 
     const KMS = 'know_my_setting';
-    const VERSION = '0.7.6';
+    const VERSION = '0.7.7';
     const DB_NAME = 'kms-wiki';
     const DB_VERSION = 4;
 
@@ -81,6 +81,24 @@
         const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
         fn(`[KMS ${VERSION}]`, msg);
         renderStatus();
+        // The status bar is hidden on mobile — surface warnings/errors as a transient toast
+        // so import failures and other feedback aren't swallowed silently.
+        if ((level === 'error' || level === 'warn') && typeof isMobile === 'function' && isMobile()) {
+            showEphemeralToast(msg, level);
+        }
+    }
+
+    let ephemeralToastTimer = null;
+    function showEphemeralToast(msg, level = 'info') {
+        try {
+            document.querySelector('.kms-ephemeral-toast')?.remove();
+            const t = document.createElement('div');
+            t.className = `kms-ephemeral-toast kms-etoast-${level}`;
+            t.textContent = msg;
+            document.body.appendChild(t);
+            clearTimeout(ephemeralToastTimer);
+            ephemeralToastTimer = setTimeout(() => t.remove(), level === 'error' ? 5000 : 3200);
+        } catch (_) {}
     }
 
     function clearEventLog() {
@@ -879,12 +897,19 @@
                     usedRegex = true;
                 } catch (_) { /* skip bad regex */ }
             }
-            // 2) Fallback: literal title with word boundaries
+            // 2) Fallback: literal title with word boundaries.
+            // Avoid lookbehind — Safari/iOS gained it only in 16.4; older WebKit throws
+            // a SyntaxError at construction, which used to crash the whole article render.
+            // Instead consume a leading non-alphanumeric (or start); TRIM_LEAD strips it back.
             if (!usedRegex) {
                 const lit = escapeRegexLiteral(a.title);
-                // Cyrillic-friendly boundary: not letter on either side
-                const re = new RegExp(`(?<![\\p{L}\\p{N}])${lit}(?![\\p{L}\\p{N}])`, 'iu');
-                patterns.push({ regex: re, articleId: a.id, title: a.title, snippet: shortSnippet(a) });
+                let re = null;
+                try {
+                    re = new RegExp(`(?:^|[^\\p{L}\\p{N}])${lit}(?![\\p{L}\\p{N}])`, 'iu');
+                } catch (_) {
+                    try { re = new RegExp(`\\b${lit}\\b`, 'i'); } catch (_) { re = null; }
+                }
+                if (re) patterns.push({ regex: re, articleId: a.id, title: a.title, snippet: shortSnippet(a) });
             }
         }
         // Longest title first, so "Tyoma's House" wins over "Tyoma"
@@ -1039,7 +1064,30 @@
         if (back) back.hidden = !(mobileTab === 'article' || mobileTab === 'map');
         updateMobileCrumb();
     }
+    // Remove the map's document-level listeners (safe to call anytime).
+    function cleanupMapListeners() {
+        if (drawerEl && drawerEl._kmsMapCleanup) {
+            try { drawerEl._kmsMapCleanup(); } catch (_) {}
+            drawerEl._kmsMapCleanup = null;
+        }
+    }
+    // Leave the map's immersive (chrome-hidden) mode.
+    function exitMapImmersive() {
+        mapImmersive = false;
+        if (drawerEl) drawerEl.classList.remove('kms-map-immersive');
+    }
+    // Ensure we're not stuck in the fullscreen-editor layout (hides topbar/tabs on mobile).
+    function exitEditorLayout() {
+        if (drawerEl) drawerEl.classList.remove('kms-editor-open');
+    }
+
     function switchMobileTab(tab) {
+        // Leaving the map: drop its listeners and immersive chrome-hiding.
+        if (mobileTab === 'map' && tab !== 'map') {
+            cleanupMapListeners();
+            exitMapImmersive();
+        }
+        exitEditorLayout();
         mobileTab = tab;
         applyMobileTabClass();
         if (tab === 'article' && currentArticleId) {
@@ -1258,9 +1306,12 @@
         window.addEventListener('resize', applyMobileClass);
 
         document.addEventListener('keydown', e => {
-            if (e.key === 'Escape' && isOpen && !document.querySelector('.kms-lightbox') && !document.querySelector('.kms-modal-overlay')) {
-                closeDrawer();
-            }
+            if (e.key !== 'Escape' || !isOpen) return;
+            // If any layer sits above the drawer, Escape belongs to it, not the drawer.
+            const overlayOpen = document.querySelector(
+                '.kms-lightbox, .kms-modal-overlay, .kms-search-overlay, .kms-bsheet-backdrop');
+            if (overlayOpen) return;
+            closeDrawer();
         });
 
         const s = getSettings();
@@ -1303,11 +1354,15 @@
         return drawerEl;
     }
 
+    let revokeTimer = null;
     async function openDrawer() {
         const d = ensureDrawer();
         void d.offsetWidth;
         d.classList.remove('kms-closed');
         isOpen = true;
+        // Cancel any pending revokeAllURLs from a very recent close, so it can't
+        // revoke the fresh blob-URLs we're about to create for this render.
+        if (revokeTimer) { clearTimeout(revokeTimer); revokeTimer = null; }
         applyMobileClass();
         await ensureSomeWorld();
         await renderWorldSelector();
@@ -1332,7 +1387,12 @@
         if (!drawerEl) return;
         drawerEl.classList.add('kms-closed');
         isOpen = false;
-        setTimeout(revokeAllURLs, 400);
+        // Tear down any map listeners and immersive/editor layout so we never reopen stuck.
+        cleanupMapListeners();
+        exitMapImmersive();
+        exitEditorLayout();
+        if (revokeTimer) clearTimeout(revokeTimer);
+        revokeTimer = setTimeout(() => { revokeTimer = null; if (!isOpen) revokeAllURLs(); }, 400);
     }
 
     async function ensureSomeWorld() {
@@ -1766,6 +1826,7 @@
 
     // ── Article (reader/editor) ────────────────────────────────
     async function renderEmptyArticle() {
+        exitEditorLayout();
         const main = drawerEl.querySelector('.kms-article');
         main.innerHTML = `
             <div class="kms-empty">
@@ -1778,6 +1839,11 @@
     async function renderArticle(id) {
         const a = await dbGet('articles', id);
         if (!a) return;
+        // We may be arriving from the map (e.g. a pin click) or from the editor —
+        // shed that view's listeners/immersive/editor chrome so we don't get stuck.
+        cleanupMapListeners();
+        exitMapImmersive();
+        exitEditorLayout();
         currentArticleId = id;
         const allowEdit = getSettings().creatorMode;
         await renderReader(a, allowEdit);
@@ -1842,9 +1908,14 @@
                </aside>`
             : '';
 
-        // Auto-glossary: linkify other-article mentions
+        // Auto-glossary: linkify other-article mentions.
+        // Never let a glossary failure blank out the whole article — fall back to escaped text.
         const allArticles = (await dbGetAll('articles')).filter(x => x.worldId === a.worldId && x.id !== a.id);
-        const linkedBody = bodyText ? linkifyBody(bodyText, allArticles, showSpoilers) : '';
+        let linkedBody = '';
+        if (bodyText) {
+            try { linkedBody = linkifyBody(bodyText, allArticles, showSpoilers); }
+            catch (err) { linkedBody = escHtml(bodyText); status(`⚠ Глоссарий пропущен: ${err.message}`, 'warn'); }
+        }
 
         // Chat command buttons (per category)
         const cmdTemplates = cat?.commandTemplates || [];
@@ -2389,13 +2460,15 @@
         const lb = document.createElement('div');
         lb.className = 'kms-lightbox';
         lb.innerHTML = `<img src="${escHtml(url)}" alt=""/><button class="kms-lightbox-close">✕</button>`;
-        const close = () => lb.remove();
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        const close = () => {
+            document.removeEventListener('keydown', onKey);
+            lb.remove();
+        };
         lb.addEventListener('click', e => {
             if (e.target === lb || e.target.classList.contains('kms-lightbox-close')) close();
         });
-        document.addEventListener('keydown', function onKey(e) {
-            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
-        });
+        document.addEventListener('keydown', onKey);
         document.body.appendChild(lb);
     }
 
@@ -2549,6 +2622,9 @@
     }
 
     async function renderMapView() {
+        // Any previous map render's document listeners must go before we (maybe) early-return.
+        cleanupMapListeners();
+        exitEditorLayout();
         const w = await getCurrentWorld();
         if (!w) { status('Сначала импортируй лорбук — нужен мир.', 'warn'); return; }
         const main = drawerEl.querySelector('.kms-article');
@@ -2562,8 +2638,13 @@
             ? { top: oldCanvas.scrollTop, left: oldCanvas.scrollLeft }
             : null;
 
-        currentArticleId = null;
-        markActiveInNav(null);
+        // On desktop the map replaces the article pane, so drop the current article.
+        // On mobile the map is its own tab — keep currentArticleId so the "Статья" tab
+        // stays alive and returns to the article the user was reading.
+        if (!isMobile()) {
+            currentArticleId = null;
+            markActiveInNav(null);
+        }
 
         // No map yet
         if (!map?.mediaId) {
@@ -2791,14 +2872,16 @@
             document.removeEventListener('mouseup', onPanUp);
         };
 
-        // Mobile immersive: tap on map (no drag, no pin) toggles UI chrome
+        // Mobile immersive: tap on map (no drag, no pin) toggles UI chrome.
+        // Reader-only: in creator mode a tap adds a pin, and hiding the toolbar would
+        // trap the creator with no way back to the controls.
         let tapStart = null;
         canvas.addEventListener('mousedown', (e) => {
-            if (!isMobile()) return;
+            if (!isMobile() || isCreator) return;
             tapStart = { x: e.clientX, y: e.clientY, t: Date.now() };
         });
         canvas.addEventListener('mouseup', (e) => {
-            if (!isMobile() || !tapStart) return;
+            if (!isMobile() || isCreator || !tapStart) return;
             const dx = e.clientX - tapStart.x, dy = e.clientY - tapStart.y;
             const dt = Date.now() - tapStart.t;
             tapStart = null;
@@ -3260,8 +3343,13 @@
                 <div class="kms-bsheet-body">${html}</div>
             </div>
         `;
-        const close = () => bd.remove();
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        const close = () => {
+            document.removeEventListener('keydown', onKey);
+            bd.remove();
+        };
         bd.addEventListener('click', e => { if (e.target === bd) close(); });
+        document.addEventListener('keydown', onKey);
         document.body.appendChild(bd);
         if (onMount) onMount(bd, close);
         return { el: bd, close };
@@ -3417,7 +3505,11 @@
         document.body.appendChild(overlay);
         const inp = overlay.querySelector('.kms-search-input');
         const results = overlay.querySelector('[data-results]');
-        const close = () => overlay.remove();
+        const onKey = (e) => { if (e.key === 'Escape') close(); };
+        const close = () => {
+            document.removeEventListener('keydown', onKey);
+            overlay.remove();
+        };
 
         let typingTimer = null;
         const doSearch = async () => {
@@ -3477,9 +3569,7 @@
         inp.addEventListener('input', () => { clearTimeout(typingTimer); typingTimer = setTimeout(doSearch, 180); });
         overlay.querySelector('[data-close]').addEventListener('click', close);
         overlay.querySelector('[data-clear]').addEventListener('click', () => { inp.value = ''; inp.focus(); doSearch(); });
-        document.addEventListener('keydown', function onKey(e) {
-            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
-        });
+        document.addEventListener('keydown', onKey);
         setTimeout(() => inp.focus(), 50);
     }
 

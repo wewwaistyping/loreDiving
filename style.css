@@ -1802,6 +1802,36 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     flex-shrink: 0;
 }
 
+/* Ephemeral toast — surfaces status() warnings/errors on mobile where the
+   status bar is hidden. Bottom-center so it clears the mobile top bar. */
+.kms-ephemeral-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 72px;
+    transform: translateX(-50%);
+    max-width: min(92vw, 460px);
+    background: rgba(26, 18, 12, 0.97);
+    color: #ece1cb;
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: 1px solid #3d2f23;
+    border-left: 3px solid #6da3c4;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+    z-index: 12000;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: center;
+    animation: kms-etoast-in 200ms ease-out;
+    pointer-events: none;
+}
+.kms-ephemeral-toast.kms-etoast-warn  { border-left-color: #d4b15c; }
+.kms-ephemeral-toast.kms-etoast-error { border-left-color: #c97a6a; }
+@keyframes kms-etoast-in {
+    from { opacity: 0; transform: translate(-50%, 12px); }
+    to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
 /* Toggle indicator for the bell button when toasts are ON */
 .kms-drawer.kms-toasts-on [data-kms-toasts-toggle] {
     color: var(--kms-warn);
@@ -2280,10 +2310,12 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     .kms-drawer.kms-mobile .kms-editor-cancel-btn { display: none; }
     .kms-editor-back { display: none; }
 
-    /* Map immersive: tap hides top bar + bottom tabs */
-    .kms-drawer.kms-mobile.kms-map-immersive .kms-mtopbar,
-    .kms-drawer.kms-mobile.kms-map-immersive .kms-mtabs,
-    .kms-drawer.kms-mobile.kms-map-immersive .kms-map-toolbar {
+    /* Map immersive: tap hides top bar + bottom tabs.
+       Scoped to .kms-mtab-map so a lingering immersive class can never hide the
+       chrome on the article/catalog tabs (belt-and-suspenders with the JS reset). */
+    .kms-drawer.kms-mobile.kms-map-immersive.kms-mtab-map .kms-mtopbar,
+    .kms-drawer.kms-mobile.kms-map-immersive.kms-mtab-map .kms-mtabs,
+    .kms-drawer.kms-mobile.kms-map-immersive.kms-mtab-map .kms-map-toolbar {
         opacity: 0;
         pointer-events: none;
         transition: opacity 200ms ease;
@@ -2307,20 +2339,22 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     .kms-drawer.kms-mobile .kms-field-row { grid-template-columns: 1fr; }
 
     /* Categories manager — mobile: 4 columns (icon | label | spoiler | delete).
-       Hide count + fields + cmds buttons — access them on desktop. */
-    .kms-drawer.kms-mobile .kms-cats-item { grid-template-columns: 38px 1fr 36px 32px; gap: 6px; }
-    .kms-drawer.kms-mobile .kms-cats-item .kms-cat-count,
-    .kms-drawer.kms-mobile .kms-cats-item .kms-cat-fields,
-    .kms-drawer.kms-mobile .kms-cats-item .kms-cat-cmds { display: none; }
-    .kms-drawer.kms-mobile .kms-cats-add { grid-template-columns: 38px 1fr 36px 110px; gap: 6px; }
-    .kms-drawer.kms-mobile .kms-cats-list h3,
-    .kms-drawer.kms-mobile .kms-dialog h3 { font-size: 18px; }
+       Hide count + fields + cmds buttons — access them on desktop.
+       NOTE: dialogs are appended to <body>, NOT inside .kms-drawer, so these rules
+       must NOT be scoped to .kms-drawer.kms-mobile (that never matched). Inside this
+       @media block a plain class selector is enough and correctly targets overlays. */
+    .kms-cats-item { grid-template-columns: 38px 1fr 36px 32px; gap: 6px; }
+    .kms-cats-item .kms-cat-count,
+    .kms-cats-item .kms-cat-fields,
+    .kms-cats-item .kms-cat-cmds { display: none; }
+    .kms-cats-add { grid-template-columns: 38px 1fr 36px 110px; gap: 6px; }
+    .kms-dialog h3 { font-size: 18px; }
 
-    .kms-drawer.kms-mobile .kms-fields-item { grid-template-columns: 80px 1fr 24px 24px 24px; }
-    .kms-drawer.kms-mobile .kms-fields-add  { grid-template-columns: 80px 1fr 90px; }
+    .kms-fields-item { grid-template-columns: 80px 1fr 24px 24px 24px; }
+    .kms-fields-add  { grid-template-columns: 80px 1fr 90px; }
 
     /* Hint that advanced category editing is desktop-only */
-    .kms-drawer.kms-mobile .kms-cats-list + .kms-cats-add::before {
+    .kms-cats-list + .kms-cats-add::before {
         content: '⚙ Поля карточки и кнопки в чат — только на десктопе';
         display: block;
         grid-column: 1 / -1;
@@ -2329,6 +2363,9 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
         color: var(--kms-text-faint);
         margin-bottom: 8px;
     }
+    /* Dialog width on small screens */
+    .kms-dialog { width: 100%; max-width: 100%; }
+    .kms-dialog-wide { width: 100%; }
 
     /* FAB hidden on mobile (drawer covers everything) */
     .kms-fab { display: none !important; }
