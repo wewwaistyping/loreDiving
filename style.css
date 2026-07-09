@@ -276,6 +276,9 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     max-height: 120px;
     overflow-y: auto;
 }
+/* An author display rule beats the UA [hidden] rule — restore it so the JS
+   `cloudEl.hidden = true` actually hides the (empty) tag cloud. */
+.kms-tag-cloud[hidden] { display: none !important; }
 .kms-tag-chip {
     display: inline-flex;
     align-items: center;
@@ -714,6 +717,11 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     margin-bottom: 22px;
 }
 .kms-editor .kms-edit-actions { display: flex; gap: 8px; }
+
+/* Desktop: the mobile "back" ✕ is hidden (the "Отмена" button is shown instead).
+   This base rule lives OUTSIDE the mobile @media block so it applies on desktop;
+   the mobile block re-shows it and hides the "Отмена" button. */
+.kms-editor-back { display: none; }
 
 .kms-field { display: block; margin-bottom: 16px; }
 .kms-field-row {
@@ -1403,10 +1411,9 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     transform-origin: 0 0;
     will-change: transform;
 }
-/* Disable cursor-as-crosshair when user is just exploring (zoomed/grab) */
+/* Reader (non-creator): the map is pannable, so show a grab cursor. */
 .kms-drawer:not(.kms-creator-on) .kms-map-stage { cursor: grab; }
 .kms-drawer:not(.kms-creator-on) .kms-map-stage:active { cursor: grabbing; }
-.kms-drawer:not(.kms-creator-on) .kms-map-stage { cursor: default; }
 .kms-map-image {
     display: block;
     max-width: 100%;
@@ -1606,22 +1613,6 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     user-select: none;
 }
 .kms-player-notes summary::-webkit-details-marker { display: none; }
-.kms-player-notes-text {
-    width: 100%;
-    margin-top: 12px;
-    background: var(--kms-bg);
-    border: 1px solid var(--kms-border);
-    color: var(--kms-text);
-    padding: 10px 12px;
-    border-radius: var(--kms-radius);
-    font-family: var(--kms-font-display);
-    font-size: 15px;
-    line-height: 1.6;
-    resize: vertical;
-    min-height: 80px;
-    box-sizing: border-box;
-}
-.kms-player-notes-text:focus { outline: none; border-color: var(--kms-info); }
 
 /* v0.7.5: notes list — each note is its own card with timestamp + delete */
 .kms-notes-list {
@@ -1738,7 +1729,6 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
 }
 .kms-lang-tab-add { color: var(--kms-text-faint); font-size: 14px; padding: 4px 10px; }
 
-.kms-field textarea + .kms-lang-tabs { margin-top: 8px; }
 .kms-lang-tabs + textarea { border-top-left-radius: 0 !important; border-top-right-radius: 0 !important; }
 
 /* Chat command buttons row */
@@ -2325,7 +2315,6 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     .kms-drawer.kms-mobile .kms-map-toolbar {
         transition: opacity 200ms ease;
     }
-    .kms-drawer.kms-mobile .kms-map-view { margin: 0; }
     .kms-drawer.kms-mobile .kms-map-toolbar { padding: 10px 14px; flex-wrap: wrap; gap: 6px; }
     .kms-drawer.kms-mobile .kms-map-title { font-size: 18px; flex: 1 0 100%; }
     .kms-drawer.kms-mobile .kms-map-zoom-controls {
@@ -2377,4 +2366,20 @@ body.kms-resizing .kms-resize-handle { pointer-events: auto; }
     .kms-drawer.kms-mobile .kms-empty { margin-top: 40px; padding: 0 16px; }
     .kms-drawer.kms-mobile .kms-empty h2 { font-size: 22px; }
     .kms-drawer.kms-mobile .kms-empty p { font-size: 14px; }
+
+    /* Bigger touch targets — the desktop sizes are well under the ~44px guideline. */
+    .kms-drawer.kms-mobile .kms-icon-btn { width: 42px; height: 42px; font-size: 17px; }
+    .kms-drawer.kms-mobile .kms-mini-btn { min-height: 34px; padding: 7px 12px; font-size: 12px; }
+    .kms-drawer.kms-mobile .kms-map-zoom-controls .kms-btn { min-width: 40px; min-height: 40px; }
+    .kms-drawer.kms-mobile .kms-note-del { font-size: 16px; padding: 6px 10px; }
+    .kms-drawer.kms-mobile .kms-lang-tab { padding: 10px 16px; }
+    .kms-drawer.kms-mobile .kms-mtab { min-height: 52px; }
+
+    /* Map goes edge-to-edge: cancel the article pane's padding like desktop does. */
+    .kms-drawer.kms-mobile .kms-map-view { margin: -18px -14px -24px; }
+
+    /* iOS home-indicator safe area: keep bottom tabs and sheets above it. */
+    .kms-mtabs { padding-bottom: env(safe-area-inset-bottom); box-sizing: content-box; }
+    .kms-bsheet { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+    .kms-ephemeral-toast { bottom: calc(72px + env(safe-area-inset-bottom)); }
 }

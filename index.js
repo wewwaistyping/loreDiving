@@ -26,7 +26,7 @@
     'use strict';
 
     const KMS = 'know_my_setting';
-    const VERSION = '0.7.7';
+    const VERSION = '0.7.8';
     const DB_NAME = 'kms-wiki';
     const DB_VERSION = 4;
 
@@ -107,11 +107,29 @@
     }
 
     // ── IndexedDB ──────────────────────────────────────────────
+    // Cache a single connection instead of reopening on every operation (a large
+    // import used to open hundreds of connections). The connection closes itself on a
+    // version change from another tab so future upgrades aren't blocked.
+    let _dbConn = null;
+    let _dbConnPromise = null;
     function openDB() {
+        if (_dbConn) return Promise.resolve(_dbConn);
+        if (_dbConnPromise) return _dbConnPromise;
+        _dbConnPromise = openDBRaw().then(db => {
+            _dbConn = db;
+            _dbConnPromise = null;
+            db.onversionchange = () => { try { db.close(); } catch (_) {} _dbConn = null; };
+            db.onclose = () => { _dbConn = null; };
+            return db;
+        }).catch(err => { _dbConnPromise = null; throw err; });
+        return _dbConnPromise;
+    }
+    function openDBRaw() {
         return new Promise((resolve, reject) => {
             const req = indexedDB.open(DB_NAME, DB_VERSION);
             req.onerror = () => reject(req.error);
             req.onsuccess = () => resolve(req.result);
+            req.onblocked = () => console.warn('[KMS] IndexedDB upgrade blocked by another tab.');
             req.onupgradeneeded = (e) => {
                 const db = e.target.result;
                 if (!db.objectStoreNames.contains('articles')) {
@@ -450,17 +468,42 @@
     async function deleteSourceWithArticles(sourceId) {
         const s = await dbGet('sources', sourceId);
         if (!s) return;
-        const articles = (await dbGetAll('articles')).filter(a => a.sourceId === sourceId);
+        const allArticles = await dbGetAll('articles');
+        const articles = allArticles.filter(a => a.sourceId === sourceId);
+        const delIds = new Set(articles.map(a => a.id));
+
         // Update map pins that referenced these articles → mark as orphan-link
         const map = await dbGet('maps', `${s.worldId}::map`);
         if (map?.pins?.length) {
-            const ids = new Set(articles.map(a => a.id));
-            map.pins = map.pins.map(p => ids.has(p.articleId) ? { ...p, articleId: null } : p);
+            map.pins = map.pins.map(p => delIds.has(p.articleId) ? { ...p, articleId: null } : p);
             await dbPut('maps', map);
         }
+
+        // Collect media blobs still referenced by anything that will survive,
+        // so we only delete blobs that become truly orphaned.
+        const survivingMedia = new Set();
+        for (const a of allArticles) {
+            if (delIds.has(a.id)) continue;
+            for (const mid of (a.media || [])) survivingMedia.add(mid);
+        }
+        const allMaps = await dbGetAll('maps');
+        for (const m of allMaps) if (m.mediaId) survivingMedia.add(m.mediaId);
+
+        const doomedMedia = new Set();
+        for (const a of articles) for (const mid of (a.media || [])) {
+            if (!survivingMedia.has(mid)) doomedMedia.add(mid);
+        }
+
         for (const a of articles) await dbDelete('articles', a.id);
+        for (const mid of doomedMedia) { try { await dbDelete('media', mid); } catch (_) {} }
+        // Purge player-layer data (notes/favorite/read) for the deleted articles.
+        const st = getSettings();
+        let purged = 0;
+        for (const id of delIds) if (st.playerData[id]) { delete st.playerData[id]; purged++; }
+        if (purged) saveSettings();
+
         await dbDelete('sources', sourceId);
-        status(`🗑 Удалён source «${s.fileName}» вместе с ${articles.length} статьями.`);
+        status(`🗑 Удалён source «${s.fileName}»: ${articles.length} статей, ${doomedMedia.size} картинок.`);
     }
 
     // ── World CRUD ─────────────────────────────────────────────
@@ -848,14 +891,22 @@
         return id;
     }
 
-    const liveURLs = new Set();
-    function trackURL(url) { liveURLs.add(url); return url; }
-    function revokeAllURLs() { for (const u of liveURLs) URL.revokeObjectURL(u); liveURLs.clear(); }
+    // Cache object-URLs per media id so re-renders (favorite toggle, note edit,
+    // language switch, tab flips) reuse one URL instead of leaking a fresh blob
+    // handle every time. All are revoked together when the drawer closes.
+    const mediaURLCache = new Map(); // mediaId → objectURL
+    function revokeAllURLs() {
+        for (const u of mediaURLCache.values()) URL.revokeObjectURL(u);
+        mediaURLCache.clear();
+    }
 
     async function getImageURL(id) {
+        if (mediaURLCache.has(id)) return mediaURLCache.get(id);
         const rec = await dbGet('media', id);
         if (!rec || !rec.blob) return null;
-        return trackURL(URL.createObjectURL(rec.blob));
+        const url = URL.createObjectURL(rec.blob);
+        mediaURLCache.set(id, url);
+        return url;
     }
 
     // ── Spoilers ───────────────────────────────────────────────
@@ -1534,6 +1585,7 @@
         await dbPut('worlds', w);
         status(`📝 Мир переименован: «${w.name}».`);
         await renderWorldSelector();
+        await renderMobileWorldPill();
     }
 
     // ── Import flow ────────────────────────────────────────────
@@ -1586,6 +1638,7 @@
             status(`✅ Импорт «${file.name}» в «${world.name}» (${parts || 'без изменений'}).`);
 
             await renderWorldSelector();
+            await renderMobileWorldPill();
             await renderCatalog();
             const articles = (await dbGetAll('articles')).filter(a => a.worldId === world.id);
             if (articles[0]) await renderArticle(articles[0].id);
@@ -1635,9 +1688,11 @@
                         <span>🔄 <b>Обновить существующий source</b> (smart merge)</span>
                     </label>
                     <select class="kms-dialog-input kms-indent" data-kms-update-source disabled>
-                        ${worlds.flatMap(w => (worldSources[w.id] || []).map(src =>
-                            `<option value="${escHtml(src.id)}">${escHtml(w.name)} → ${escHtml(src.fileName)} (${src.entryCount || 0})</option>`
-                        )).join('') || '<option disabled>нет существующих sources</option>'}
+                        ${worlds.flatMap(w => (worldSources[w.id] || [])
+                            .filter(src => src.role !== 'journal') // never merge a lorebook into the player's journal
+                            .map(src =>
+                                `<option value="${escHtml(src.id)}">${escHtml(w.name)} → ${escHtml(src.fileName)} (${src.entryCount || 0})</option>`
+                        )).join('') || '<option value="" disabled>нет существующих sources</option>'}
                     </select>
                     ` : ''}
 
@@ -1672,6 +1727,7 @@
                 } else {
                     // find the world for the chosen source
                     const sid = updateSourceSel.value;
+                    if (!sid) { status('Нет source для обновления — выбери другой вариант.', 'warn'); return; }
                     let wid = null;
                     for (const w of worlds) {
                         if ((worldSources[w.id] || []).find(s => s.id === sid)) { wid = w.id; break; }
@@ -1874,9 +1930,13 @@
         const settings = getSettings();
         const showSpoilers = settings.showSpoilersGlobal;
 
-        // Auto-mark as read on open
+        // Auto-mark as read on open. Refresh the catalog so the unread dot clears
+        // immediately (on desktop the catalog is visible next to the article).
         const player = getPlayerData(a.id);
-        if (!player.read) setPlayerData(a.id, { read: true });
+        if (!player.read) {
+            setPlayerData(a.id, { read: true });
+            Promise.resolve().then(() => renderCatalog());
+        }
 
         const keys = a.source?.keys || [];
         const mediaIds = a.media || [];
@@ -1909,8 +1969,15 @@
             : '';
 
         // Auto-glossary: linkify other-article mentions.
+        // Exclude spoiler articles (article.spoiler OR isSpoiler category) from the link
+        // set unless the reader has globally revealed spoilers — otherwise a glossary link
+        // and its snippet tooltip would leak secret content into a public article.
+        const worldCats = await getCategoriesForWorld(a.worldId);
+        const spoilerCatKeys = new Set(worldCats.filter(c => c.isSpoiler).map(c => c.key));
+        const allArticles = (await dbGetAll('articles')).filter(x =>
+            x.worldId === a.worldId && x.id !== a.id
+            && (showSpoilers || (!x.spoiler && !spoilerCatKeys.has(x.categoryKey))));
         // Never let a glossary failure blank out the whole article — fall back to escaped text.
-        const allArticles = (await dbGetAll('articles')).filter(x => x.worldId === a.worldId && x.id !== a.id);
         let linkedBody = '';
         if (bodyText) {
             try { linkedBody = linkifyBody(bodyText, allArticles, showSpoilers); }
@@ -2646,8 +2713,12 @@
             markActiveInNav(null);
         }
 
-        // No map yet
-        if (!map?.mediaId) {
+        // Resolve the image up front: a dangling mediaId (blob gone after an
+        // export/import round-trip) must fall back to the empty state, not render <img src="">.
+        const mapURL = map?.mediaId ? await getImageURL(map.mediaId) : null;
+
+        // No map yet (or its image is missing)
+        if (!mapURL) {
             main.innerHTML = `
                 <div class="kms-empty">
                     <h2>🗺 Карта мира</h2>
@@ -2677,7 +2748,6 @@
             return;
         }
 
-        const mapURL = await getImageURL(map.mediaId);
         const pinsHtml = (map.pins || []).map(p => {
             const a = articles.find(x => x.id === p.articleId);
             const label = p.label || a?.title || 'без статьи';
@@ -3549,7 +3619,19 @@
                 return;
             }
             const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-            const highlight = (s) => escHtml(s).replace(re, m => `<mark>${m}</mark>`);
+            // Highlight on the RAW string, escaping each segment — running the regex over
+            // already-escaped HTML would mangle entities (e.g. "amp" matching inside &amp;).
+            const highlight = (s) => {
+                if (!s) return '';
+                let out = '', last = 0, m;
+                re.lastIndex = 0;
+                while ((m = re.exec(s)) !== null) {
+                    out += escHtml(s.slice(last, m.index)) + '<mark>' + escHtml(m[0]) + '</mark>';
+                    last = m.index + m[0].length;
+                    if (m[0].length === 0) re.lastIndex++;
+                }
+                return out + escHtml(s.slice(last));
+            };
             results.innerHTML = `
                 <div class="kms-search-meta">${hits.length} совпадений</div>
                 <ul class="kms-search-list">
@@ -3710,9 +3792,25 @@
                 // Sanitize: an icon is at most a couple of chars — never HTML. Guards against
                 // a malicious bundle smuggling markup into a field rendered by the reader.
                 const safeIcon = typeof cat.icon === 'string' ? cat.icon.slice(0, 8) : '';
-                // If a category with same key already exists in target world (merge), keep existing
                 const existing = await dbGet('categories', newId);
-                if (!existing) await dbPut('categories', { ...cat, icon: safeIcon, id: newId, worldId: world.id });
+                if (!existing) {
+                    await dbPut('categories', { ...cat, icon: safeIcon, id: newId, worldId: world.id });
+                } else {
+                    // Merge: adopt the bundle's infobox fields / chat commands if the target
+                    // category has none, so imported articles' infobox values stay visible.
+                    let changed = false;
+                    if ((!existing.infoboxFields || existing.infoboxFields.length === 0)
+                        && cat.infoboxFields?.length) {
+                        existing.infoboxFields = cat.infoboxFields;
+                        changed = true;
+                    }
+                    if ((!existing.commandTemplates || existing.commandTemplates.length === 0)
+                        && cat.commandTemplates?.length) {
+                        existing.commandTemplates = cat.commandTemplates;
+                        changed = true;
+                    }
+                    if (changed) await dbPut('categories', existing);
+                }
             }
             // Media: rebuild ids
             for (const m of (bundle.media || [])) {
@@ -3724,14 +3822,26 @@
                     createdAt: Date.now(),
                 });
             }
-            // Articles: rewrite id, sourceId, worldId, media[]
+            // Articles: rewrite id, sourceId, worldId, media[], related[]
+            // Related ids are `${sourceId}::entry-${uid}` — recompute the new id by remapping
+            // the source portion (source idMap is fully built above), so links don't dangle.
+            const remapArticleId = (oldId) => {
+                if (typeof oldId !== 'string') return oldId;
+                const sep = oldId.lastIndexOf('::entry-');
+                if (sep < 0) return oldId;
+                const oldSrc = oldId.slice(0, sep);
+                const tail = oldId.slice(sep);
+                return `${idMap.get(oldSrc) || oldSrc}${tail}`;
+            };
             for (const art of (bundle.articles || [])) {
                 const newSourceId = idMap.get(art.sourceId) || art.sourceId;
                 const newId = `${newSourceId}::entry-${art.uid}`;
                 const newMedia = (art.media || []).map(mid => idMap.get(mid)).filter(Boolean);
+                const newRelated = Array.isArray(art.related) ? art.related.map(remapArticleId) : [];
                 idMap.set(art.id, newId);
                 await dbPut('articles', {
-                    ...art, id: newId, sourceId: newSourceId, worldId: world.id, media: newMedia,
+                    ...art, id: newId, sourceId: newSourceId, worldId: world.id,
+                    media: newMedia, related: newRelated,
                 });
             }
             // Map: rewrite mediaId + pin articleIds
@@ -3753,6 +3863,7 @@
 
             status(`✅ Пакет импортирован: ${(bundle.articles || []).length} статей, ${(bundle.media || []).length} картинок.`);
             await renderWorldSelector();
+            await renderMobileWorldPill();
             await renderCatalog();
             const articles = (await dbGetAll('articles')).filter(a => a.worldId === world.id);
             if (articles[0]) await renderArticle(articles[0].id);
@@ -3834,21 +3945,34 @@
     async function scanForMentions(text) {
         const w = await getCurrentWorld();
         if (!w) return;
-        const articles = (await dbGetAll('articles')).filter(a => a.worldId === w.id && !a.spoiler);
-        if (articles.length === 0) return;
-        const patterns = compileGlossaryPatterns(articles);
+        // Exclude spoilers from live-tracking so a chat mention never reveals a
+        // secret in the catalog highlight or the toast: both article.spoiler AND
+        // articles living in an isSpoiler category are filtered out.
+        const cats = await getCategoriesForWorld(w.id);
+        const spoilerCatKeys = new Set(cats.filter(c => c.isSpoiler).map(c => c.key));
+        const articles = (await dbGetAll('articles')).filter(a =>
+            a.worldId === w.id && !a.spoiler && !spoilerCatKeys.has(a.categoryKey));
+
         const matched = new Map(); // articleId → title
-        for (const p of patterns) {
-            if (matched.has(p.articleId)) continue;
-            if (p.regex.test(text)) matched.set(p.articleId, p.title);
+        if (articles.length) {
+            const patterns = compileGlossaryPatterns(articles);
+            for (const p of patterns) {
+                if (matched.has(p.articleId)) continue;
+                try { if (p.regex.test(text)) matched.set(p.articleId, p.title); } catch (_) {}
+            }
         }
-        if (matched.size === 0) return;
-        // Update mentioned set & nav
+
+        // Sync the highlight set to THIS message. Clearing on an empty match fixes the
+        // "highlight sticks forever after a message with no mentions" bug.
+        const changed = matched.size !== mentionedArticleIds.size
+            || [...matched.keys()].some(id => !mentionedArticleIds.has(id));
         mentionedArticleIds.clear();
         for (const id of matched.keys()) mentionedArticleIds.add(id);
-        if (drawerEl && isOpen) renderCatalog();
-        // Toast
-        showMentionToast([...matched.values()].slice(0, 3), [...matched.keys()][0]);
+        if (changed && drawerEl && isOpen) renderCatalog();
+
+        if (matched.size) {
+            showMentionToast([...matched.values()].slice(0, 3), [...matched.keys()][0]);
+        }
     }
 
     function showMentionToast(titles, firstId) {
